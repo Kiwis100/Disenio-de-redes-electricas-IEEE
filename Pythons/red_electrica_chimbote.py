@@ -3,9 +3,10 @@
 
 import csv
 import math
+import os
 import matplotlib.pyplot as plt
 
-ARCHIVO = "SED_1500_CHIMBOTE.csv"
+ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SED_1500_CHIMBOTE.csv")
 TAM_ZONA = 24       # maximo de subestaciones por zona
 NUM_ENLACES = 3     # enlaces que unen dos regiones vecinas
 
@@ -201,8 +202,9 @@ def dibujar_grafo():
 
 # PROGRAMA PRINCIPAL
 
-leer_datos()
-todos = list(range(len(nodos)))
-dividir(todos)
-mostrar_resumen()
-dibujar_grafo()
+if __name__ == "__main__":
+    leer_datos()
+    todos = list(range(len(nodos)))
+    dividir(todos)
+    mostrar_resumen()
+    dibujar_grafo()
