@@ -14,12 +14,16 @@ Proyecto de Complejidad Algorítmica. Modela las subestaciones de distribución 
 | BFS/DFS | `analisis_red.py` | Conectividad y componentes, también simulando fallas |
 | Ordenamiento topológico (Kahn) | `analisis_red.py` | Orden de distribución de energía desde una subestación fuente |
 | SCC (Kosaraju) | `analisis_red.py` | Detecta conexiones sin respaldo (redundancia) |
-| Fuerza bruta y backtracking | *en desarrollo* | |
+| Fuerza bruta  | `FuerzaBruta_DataSet.py` y `FuerzaBrutaGrafo_DataSet.py` | Configuraciones validas posibles (Busqueda exhaustiva) |
+| Backtracking | `BACKTRACKING_DataSet.py` | (Configuraciones posibles con poda (Restricciones)|
+
 
 ## Archivos
 - `Pythons/red_electrica_chimbote.py`: lee el CSV y construye el grafo.
 - `Pythons/analisis_red.py`: BFS/DFS, orden topológico y SCC. Al ejecutarlo imprime resultados y genera las figuras
 - `Pythons/interfaz_red.py`: interfaz gráfica (Tkinter).
+- `FuerzaBrutaGrafo_DataSet.py`: Crea el grafo de los nodos del data
+- `BACKTRACKING_DataSet.py`: De acuerdo con las restricciones realiza las podas necesarias.
 
 ## Cómo ejecutar
 Requiere Python 3 y matplotlib:
