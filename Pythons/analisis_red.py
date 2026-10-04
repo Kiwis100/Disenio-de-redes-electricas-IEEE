@@ -3,6 +3,8 @@
 #   - Ordenamiento topologico: distribucion de energia
 #   - SCC: detectar redundancias
 #
+# Usa el grafo que construye red_electrica_chimbote.py (divide y venceras).
+# Los tres algoritmos estan programados a mano (sin networkx).
 #
 # Para simular fallos, todas las funciones reciben:
 #   quitar_nodos:   conjunto de nodos que fallan
@@ -208,7 +210,7 @@ def orientar_dfs(grafo, quitar_nodos=(), quitar_aristas=()):
     return dirigido
 
 
-def scc_kosaraju(dirigido):
+def kosaraju_detallado(dirigido):
     # componentes fuertemente conexas con el algoritmo de Kosaraju (con pilas propias):
     #   1) DFS sobre el grafo anotando el orden en que TERMINA cada nodo
     #   2) se invierte el sentido de todas las aristas (grafo transpuesto)
@@ -261,7 +263,12 @@ def scc_kosaraju(dirigido):
                     componente.append(v)
                     pila.append(v)
         componentes.append(componente)
-    return componentes
+    return terminado, transpuesto, componentes
+
+
+def scc_kosaraju(dirigido):
+    # devuelve solo las componentes (los pasos internos los usa el ejemplo de la interfaz)
+    return kosaraju_detallado(dirigido)[2]
 
 
 def redundancia(grafo, quitar_nodos=(), quitar_aristas=()):
