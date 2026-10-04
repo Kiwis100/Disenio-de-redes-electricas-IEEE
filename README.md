@@ -18,7 +18,7 @@ Proyecto de Complejidad Algorítmica. Modela las subestaciones de distribución 
 
 ## Archivos
 - `Pythons/red_electrica_chimbote.py`: lee el CSV y construye el grafo.
-- `Pythons/analisis_red.py`: BFS/DFS, orden topológico y SCC. Al ejecutarlo imprime resultados y genera las figuras `fig5`, `fig6` y `fig7`.
+- `Pythons/analisis_red.py`: BFS/DFS, orden topológico y SCC. Al ejecutarlo imprime resultados y genera las figuras
 - `Pythons/interfaz_red.py`: interfaz gráfica (Tkinter).
 
 ## Cómo ejecutar

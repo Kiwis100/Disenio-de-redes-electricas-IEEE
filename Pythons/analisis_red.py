@@ -4,7 +4,6 @@
 #   - SCC: detectar redundancias
 #
 # Usa el grafo que construye red_electrica_chimbote.py (divide y venceras).
-# Los tres algoritmos estan programados a mano (sin networkx).
 #
 # Para simular fallos, todas las funciones reciben:
 #   quitar_nodos:   conjunto de nodos que fallan
