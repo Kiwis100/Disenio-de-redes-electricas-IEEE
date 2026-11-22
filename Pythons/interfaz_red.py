@@ -4,6 +4,8 @@
 #   - BFS/DFS: conectividad
 #   - Ordenamiento topologico: distribucion de energia
 #   - SCC: redundancias (aristas sin respaldo)
+#   - Programacion dinamica: refuerzo de la red con un presupuesto (mochila 0/1)
+#   - DP en grafos: rutas eficientes (Bellman-Ford y Floyd-Warshall)
 #
 # Ejecutar:  python interfaz_red.py
 # Archivos necesarios en la misma carpeta: red_electrica_chimbote.py,
@@ -59,7 +61,7 @@ def aplicar_estilo(raiz):
                foreground=[("active", "white")])
 
     estilo.configure("TNotebook", background=COLOR_FONDO, borderwidth=0)
-    estilo.configure("TNotebook.Tab", padding=(14, 6), font=("Segoe UI", 10, "bold"),
+    estilo.configure("TNotebook.Tab", padding=(10, 6), font=("Segoe UI", 10, "bold"),
                      background="#dfe5f0")
     estilo.map("TNotebook.Tab", background=[("selected", "#ffffff")],
                foreground=[("selected", COLOR_ACENTO)])
@@ -91,6 +93,8 @@ estado = {
     "ej_grafo": {},          # subgrafo del ejemplo: {nodo: {vecino: distancia}}
     "ej_letra": {},          # letra con que se dibuja cada nodo del ejemplo
     "ej_pos": {},            # posicion de cada nodo en el dibujo del ejemplo
+    "ej_mochila": None,      # los 4 puentes reales del ejemplo de programacion dinamica
+    "destino": None,         # subestacion de destino de la ruta minima
 }
 
 # widgets (se crean en construir_interfaz)
@@ -107,6 +111,8 @@ etiqueta_nivel = None
 variable_zoom = None
 variable_falla_ej = None
 barra_herramientas = None
+entrada_presupuesto = None
+entrada_destino = None
 indice_por_etiqueta = {}
 
 
@@ -224,7 +230,7 @@ def nombre(i):
 # DIBUJO
 
 def dibujar(titulo, valores, cmap, resaltadas=(), etiqueta_resaltada="", vmin=0, vmax=19,
-            zoom=None, tamanos=None):
+            zoom=None, tamanos=None, verdes=(), etiqueta_verde=""):
     # valores[i] es el numero que da el color del nodo i (None = sin energia/alcance)
     nc = estado["nodos_caidos"]
     ac = estado["aristas_caidas"]
@@ -257,6 +263,15 @@ def dibujar(titulo, valores, cmap, resaltadas=(), etiqueta_resaltada="", vmin=0,
         ys = ys + [red.nodos[a]["y"], red.nodos[b]["y"], None]
     if xs:
         eje.plot(xs, ys, color="red", linewidth=2.5, label=etiqueta_resaltada)
+
+    # aristas en verde (por ejemplo, los enlaces que se reconstruirian)
+    xs = []
+    ys = []
+    for a, b in verdes:
+        xs = xs + [red.nodos[a]["x"], red.nodos[b]["x"], None]
+        ys = ys + [red.nodos[a]["y"], red.nodos[b]["y"], None]
+    if xs:
+        eje.plot(xs, ys, color="#16a34a", linewidth=3.2, label=etiqueta_verde)
 
     # nodos
     px, py, pc, ps = [], [], [], []
@@ -572,8 +587,8 @@ def ver_nodo_escrito():
 
 
 def al_hacer_clic(evento):
-    # en la vista de grafos, un clic selecciona el nodo mas cercano
-    if estado["vista"] != vista_nodo:
+    # en la vista de grafos y en la de rutas, un clic selecciona el nodo mas cercano
+    if estado["vista"] not in (vista_nodo, vista_ruta):
         return
     if evento.inaxes != eje or evento.xdata is None:
         return
@@ -588,8 +603,12 @@ def al_hacer_clic(evento):
         if mejor_dist is None or d < mejor_dist:
             mejor = i
             mejor_dist = d
-    estado["nodo_sel"] = mejor
-    vista_nodo()
+    if estado["vista"] == vista_ruta:
+        estado["destino"] = mejor
+        vista_ruta()
+    else:
+        estado["nodo_sel"] = mejor
+        vista_nodo()
 
 
 # EJEMPLO PEQUENO (6 subestaciones reales, para explicar cada algoritmo)
@@ -881,6 +900,431 @@ def ej_scc():
              "Invertido (X<-Y: antes Y apuntaba a X): " + invertido + "\n" + conclusion)
 
 
+# VISTAS: PROGRAMACION DINAMICA Y DP EN GRAFOS
+
+INFINITO = float("inf")
+SIN_COLOR = ListedColormap(["#b0c4de"])
+
+
+def leer_presupuesto():
+    try:
+        valor = float(entrada_presupuesto.get().replace(",", "."))
+        if valor < 0:
+            raise ValueError
+    except ValueError:
+        messagebox.showerror("Presupuesto no valido",
+                             "Escribe un numero de metros mayor o igual a 0. Ejemplo: 1500")
+        return None
+    return valor
+
+
+def fuente_caida():
+    # avisa si la subestacion fuente esta caida (sin fuente no hay refuerzo ni rutas)
+    if estado["fuente"] in estado["nodos_caidos"]:
+        n = len(red.nodos)
+        dibujar("La fuente esta caida", [0] * n, SIN_COLOR, vmin=0, vmax=1)
+        escribir("LA FUENTE ESTA CAIDA\nLa subestacion " + nombre(estado["fuente"]) +
+                 " no recibe energia. Usa 'Limpiar todas las fallas' o cambia la fuente.")
+        return True
+    return False
+
+
+def calcular_refuerzo():
+    presupuesto = leer_presupuesto()
+    if presupuesto is None:
+        return None
+    res = an.refuerzo_dp(red.grafo, estado["fuente"], presupuesto, estado["nodos_caidos"],
+                         estado["aristas_caidas"])
+    res["presupuesto"] = presupuesto
+    return res
+
+
+def vista_refuerzo():
+    estado["vista"] = vista_refuerzo
+    if fuente_caida():
+        return
+    n = len(red.nodos)
+    res = calcular_refuerzo()
+    if res is None:
+        return
+    candidatos = res["candidatos"]
+    if not candidatos:
+        dibujar("Refuerzo con presupuesto: no hay nada que reforzar", [0] * n, SIN_COLOR, vmin=0, vmax=1)
+        escribir("PROGRAMACION DINAMICA: REFUERZO CON PRESUPUESTO\n"
+                 "Puentes sin respaldo: " + str(len(res["puentes"])) + " | con enlace para reconstruir: 0\n"
+                 "No hay puentes que reforzar. Carga el 'diseno minimo' (1 de 3 enlaces por union) o simula "
+                 "fallas en la pestana Fallas para tener puntos sin respaldo.")
+        return
+
+    cubiertos = set()
+    for i in res["elegidos"]:
+        cubiertos.add(candidatos[i]["puente"])
+    sin_cubrir = [p for p in res["puentes"] if p not in cubiertos]
+    dibujar("Refuerzo con " + str(round(res["presupuesto"])) + " m de cable: " + str(len(res["enlaces"]))
+            + " enlaces a reconstruir", [0] * n, SIN_COLOR, sin_cubrir, "puente sin respaldo",
+            vmin=0, vmax=1, verdes=res["enlaces"], etiqueta_verde="enlace a reconstruir (DP)")
+
+    mayores = sorted(res["elegidos"], key=lambda i: candidatos[i]["riesgo"], reverse=True)[:3]
+    texto = "PROGRAMACION DINAMICA: REFUERZO CON PRESUPUESTO\n"
+    texto += ("Puentes sin respaldo: " + str(len(res["puentes"])) + " | con un enlace que solo protege a ese puente: "
+              + str(len(candidatos)) + "\n")
+    texto += ("Presupuesto: " + str(round(res["presupuesto"])) + " m | enlaces a reconstruir: "
+              + str(len(res["elegidos"])) + " | costo: " + str(round(res["costo"])) + " m\n")
+    if res["riesgo_total"] > 0:
+        texto += ("Criticidad cubierta: " + str(round(res["protegido"])) + " de " + str(round(res["riesgo_total"]))
+                  + " kW (" + str(round(100 * res["protegido"] / res["riesgo_total"], 1)) + "%)\n")
+    texto += ("Verificacion: al reconstruirlos y volver a ejecutar SCC quedan " + str(res["puentes_despues"])
+              + " puentes de " + str(len(res["puentes"])) + "\n")
+    texto += ("Mochila 0/1: tabla de " + str(len(res["tabla"])) + " x " + str(len(res["tabla"][0]))
+              + " celdas (candidatos x unidades de " + str(an.UNIDAD_M) + " m)\n")
+    if mayores:
+        texto += "Mayor criticidad cubierta: "
+        texto += ", ".join(nombre(candidatos[i]["refuerzo"][0]) + "-" + nombre(candidatos[i]["refuerzo"][1])
+                           + " (" + str(round(candidatos[i]["costo"])) + " m, " + str(round(candidatos[i]["riesgo"]))
+                           + " kW)" for i in mayores)
+    escribir(texto)
+
+
+def vista_curva():
+    estado["vista"] = vista_curva
+    if fuente_caida():
+        return
+    res = calcular_refuerzo()
+    if res is None:
+        return
+    if not res["candidatos"] or res["riesgo_total"] <= 0:
+        dibujar("Curva de presupuesto: no hay nada que reforzar", [0] * len(red.nodos), SIN_COLOR, vmin=0, vmax=1)
+        escribir("PROGRAMACION DINAMICA: CURVA DE PRESUPUESTO\nNo hay puentes que reforzar. Carga el 'diseno "
+                 "minimo' o simula fallas.")
+        return
+    ultima = res["tabla"][-1]
+    xs = [j * an.UNIDAD_M for j in range(len(ultima))]
+    ys = [100.0 * v / res["riesgo_total"] for v in ultima]
+    j_pres = min(int(res["presupuesto"] // an.UNIDAD_M), len(ultima) - 1)
+
+    eje.clear()
+    eje.set_aspect("auto")
+    eje.plot(xs, ys, color=COLOR_ACENTO, linewidth=2.2)
+    eje.fill_between(xs, ys, color=COLOR_ACENTO, alpha=0.12)
+    eje.axvline(xs[j_pres], color=COLOR_AVISO, linestyle="--", linewidth=1.4)
+    eje.scatter([xs[j_pres]], [ys[j_pres]], color=COLOR_AVISO, s=60, zorder=3,
+                label="presupuesto actual: " + str(round(xs[j_pres])) + " m -> " + str(round(ys[j_pres], 1)) + "%")
+    eje.set_title("Criticidad cubierta segun el presupuesto de cable (programacion dinamica)",
+                  fontsize=11, fontweight="bold", color=COLOR_OSCURO)
+    eje.set_xlabel("Presupuesto de cable (m)")
+    eje.set_ylabel("Criticidad cubierta (%)")
+    eje.set_ylim(0, 105)
+    eje.grid(True, alpha=0.3)
+    eje.legend(loc="lower right", fontsize=8)
+    lienzo.draw()
+    barra_herramientas.update()
+
+    umbrales = []
+    for pct in (50, 80, 95, 100):
+        for j in range(len(ys)):
+            if ys[j] >= pct - 1e-9:
+                umbrales.append(str(pct) + "%: " + str(round(xs[j])) + " m")
+                break
+    escribir("PROGRAMACION DINAMICA: CURVA DE PRESUPUESTO\n"
+             "La tabla de la mochila se arma una sola vez y sirve para cualquier presupuesto: cada punto de la "
+             "curva es la mejor criticidad que se puede cubrir con ese cable.\n"
+             "Con " + str(round(xs[j_pres])) + " m se cubre el " + str(round(ys[j_pres], 1)) + "% de la criticidad.\n"
+             "Cable necesario para cubrir " + " | ".join(umbrales) + "\n"
+             "La curva sube rapido al principio (puentes baratos y criticos) y se aplana al final: los ultimos "
+             "puentes cuestan mucho cable y protegen poca demanda.")
+
+
+def aplicar_refuerzo():
+    if estado["fuente"] in estado["nodos_caidos"]:
+        fuente_caida()
+        return
+    res = calcular_refuerzo()
+    if res is None:
+        return
+    if not res["enlaces"]:
+        messagebox.showinfo("Sin refuerzo", "Con este presupuesto no se puede reconstruir ningun enlace "
+                            "(o no hay puentes que reforzar).")
+        return
+    for e in res["enlaces"]:
+        estado["aristas_caidas"].discard(an.clave(e[0], e[1]))
+    actualizar_fallas()
+    vista_redundancia()
+
+
+def escenario_d():
+    # diseno minimo: de los 3 enlaces de cada union queda solo el mas corto (todos son puentes)
+    estado["nodos_caidos"] = set()
+    estado["aristas_caidas"] = an.diseno_minimo()
+    actualizar_fallas()
+    vista_refuerzo()
+
+
+def ir_a_destino():
+    codigo = entrada_destino.get().strip().upper()
+    if codigo not in indice_por_etiqueta:
+        messagebox.showerror("Subestacion no encontrada",
+                             "No existe la etiqueta '" + codigo + "'. Ejemplo: E344089")
+        return
+    estado["destino"] = indice_por_etiqueta[codigo]
+    vista_ruta()
+
+
+def ir_a_destino_o_defecto():
+    if entrada_destino.get().strip() == "":
+        estado["destino"] = None
+        vista_ruta()
+    else:
+        ir_a_destino()
+
+
+def vista_ruta():
+    estado["vista"] = vista_ruta
+    if fuente_caida():
+        return
+    nc = estado["nodos_caidos"]
+    ac = estado["aristas_caidas"]
+    f = estado["fuente"]
+    n = len(red.nodos)
+    dist, padre, rondas = an.bellman_ford(red.grafo, f, nc, ac)
+    alcanzables = [u for u in dist if dist[u] < INFINITO]
+    d = estado["destino"]
+    if d is None or d not in dist or dist[d] == INFINITO:
+        d = max(alcanzables, key=lambda u: dist[u])          # por defecto, la subestacion mas lejana
+        estado["destino"] = d
+    entrada_destino.delete(0, "end")
+    entrada_destino.insert(0, nombre(d))
+
+    ruta = an.camino_minimo(padre, dist, d)
+    nivel, padre_bfs, _ = an.bfs(red.grafo, f, nc, ac)
+    ruta_bfs = an.camino_minimo(padre_bfs, {u: 0 for u in padre_bfs}, d)
+    largo_bfs = an.largo_camino(red.grafo, ruta_bfs)
+    pares = [(ruta[k], ruta[k + 1]) for k in range(len(ruta) - 1)]
+    pares_bfs = [(ruta_bfs[k], ruta_bfs[k + 1]) for k in range(len(ruta_bfs) - 1)]
+    misma = [an.clave(a, b) for a, b in pares] == [an.clave(a, b) for a, b in pares_bfs]
+
+    maximo = max(dist[u] for u in alcanzables)
+    valores = [None] * n
+    tamanos = [5] * n
+    for u in alcanzables:
+        valores[u] = dist[u]
+    tamanos[d] = 90
+    dibujar("Ruta minima (Bellman-Ford): " + nombre(f) + " -> " + nombre(d) + ", " + str(round(dist[d])) + " m",
+            valores, "viridis", pares, "ruta minima (Bellman-Ford)", vmin=0, vmax=max(maximo, 1),
+            tamanos=tamanos, verdes=([] if misma else pares_bfs), etiqueta_verde="menos saltos (BFS)")
+
+    texto = "DP EN GRAFOS: RUTA EFICIENTE (BELLMAN-FORD)\n"
+    texto += ("Desde " + nombre(f) + " hasta " + nombre(d) + ": " + str(round(dist[d])) + " m de cable en "
+              + str(len(ruta) - 1) + " saltos\n")
+    if misma:
+        texto += "La ruta con menos saltos (BFS) es la misma: " + str(len(ruta_bfs) - 1) + " saltos.\n"
+    else:
+        ahorro = largo_bfs - dist[d]
+        texto += ("Ruta con menos saltos (BFS): " + str(len(ruta_bfs) - 1) + " saltos, " + str(round(largo_bfs))
+                  + " m de cable -> Bellman-Ford ahorra " + str(round(ahorro)) + " m ("
+                  + str(round(100 * ahorro / largo_bfs, 1)) + "%)\n")
+    texto += ("Subestaciones alcanzables: " + str(len(alcanzables)) + " de " + str(n - len(nc)) + " | rondas con "
+              "mejoras: " + str(rondas) + "\n")
+    texto += ("Cada ronda k calcula la menor distancia usando a lo sumo k aristas. Haz clic en otro nodo del mapa "
+              "o escribe su etiqueta para cambiar el destino.")
+    escribir(texto)
+
+
+def vista_zonas():
+    estado["vista"] = vista_zonas
+    ac = estado["aristas_caidas"]
+    d, centros, zona_de = an.grafo_de_zonas(ac)
+    dist, sig = an.floyd_warshall(d)
+    central, ecc, diametro, inalcanzables = an.resumen_zonas(dist)
+    nz = len(d)
+    zf = zona_de[estado["fuente"]]
+
+    eje.clear()
+    xs = []
+    ys = []
+    enlaces = 0
+    for i in range(nz):
+        for j in range(i + 1, nz):
+            if d[i][j] < INFINITO:
+                enlaces = enlaces + 1
+                xs = xs + [centros[i][0], centros[j][0], None]
+                ys = ys + [centros[i][1], centros[j][1], None]
+    eje.plot(xs, ys, color="#94a3b8", linewidth=0.9, zorder=1)
+
+    ruta = an.ruta_entre_zonas(sig, diametro[0], diametro[1])
+    if ruta:
+        eje.plot([centros[z][0] for z in ruta], [centros[z][1] for z in ruta], color="red", linewidth=2.6,
+                 zorder=2, label="diametro: " + str(round(diametro[2])) + " m")
+    cx = [c[0] for c in centros]
+    cy = [c[1] for c in centros]
+    eje.scatter(cx, cy, c=ecc, cmap="RdYlGn_r", s=70, edgecolors=COLOR_OSCURO, linewidths=0.6, zorder=3)
+    eje.scatter([cx[central]], [cy[central]], marker="*", s=300, color="black", zorder=4,
+                label="zona central (Z" + str(central + 1) + ")")
+    eje.scatter([cx[zf]], [cy[zf]], s=260, facecolors="none", edgecolors=COLOR_ACENTO, linewidths=2.4,
+                zorder=4, label="zona de la fuente (Z" + str(zf + 1) + ")")
+    for z in (diametro[0], diametro[1]):
+        eje.annotate("Z" + str(z + 1), (cx[z], cy[z]), textcoords="offset points", xytext=(6, 6), fontsize=8,
+                     fontweight="bold", color=COLOR_OSCURO)
+    eje.set_title("Rutas entre zonas (Floyd-Warshall): color = ruta mas larga hacia otra zona",
+                  fontsize=11, fontweight="bold", color=COLOR_OSCURO)
+    eje.set_xlabel("Este (m)")
+    eje.set_ylabel("Norte (m)")
+    eje.set_aspect("equal")
+    eje.legend(loc="upper left", fontsize=7)
+    lienzo.draw()
+    barra_herramientas.update()
+
+    texto = "DP EN GRAFOS: RUTAS ENTRE ZONAS (FLOYD-WARSHALL)\n"
+    texto += ("Grafo reducido: " + str(nz) + " zonas y " + str(enlaces) + " conexiones activas entre zonas vecinas "
+              "(peso = distancia entre los centros de las zonas)\n")
+    texto += ("Zona central: Z" + str(central + 1) + " (su ruta mas larga hacia otra zona mide "
+              + str(round(ecc[central])) + " m)\n")
+    texto += ("Diametro: " + str(round(diametro[2])) + " m entre las zonas Z" + str(diametro[0] + 1) + " y Z"
+              + str(diametro[1] + 1) + ", pasando por " + str(len(ruta)) + " zonas\n")
+    texto += ("La fuente esta en la zona Z" + str(zf + 1) + ", a " + str(round(dist[zf][central]))
+              + " m de la zona central\n")
+    texto += "Operaciones: " + str(nz) + "^3 = " + str(nz ** 3) + " (todas las combinaciones i-k-j)"
+    if inalcanzables > 0:
+        texto += "\nCon las fallas actuales hay " + str(inalcanzables) + " pares de zonas sin ruta."
+    escribir(texto)
+
+
+# EJEMPLO PEQUENO: PASOS 6 Y 7 (DP)
+
+def ej_celda(x, y, w, h, texto, color="white", tam=9, negrita=False):
+    eje.add_patch(Rectangle((x, y - h / 2), w, h, facecolor=color, edgecolor=COLOR_OSCURO, linewidth=1.0, zorder=3))
+    eje.text(x + w / 2, y, texto, ha="center", va="center", fontsize=tam, color=COLOR_OSCURO, zorder=4,
+             fontweight="bold" if negrita else "normal")
+
+
+def ej_bellman():
+    estado["vista"] = ej_bellman
+    mini = estado["ej_grafo"]
+    nodos = sorted(mini, key=ej_nodo)
+    inicio = estado["ej_nodos"][0]
+    historial = []
+    dist, padre, rondas = an.bellman_ford(mini, inicio, historial=historial)
+    primera = {}
+    for u in mini:
+        for k in range(len(historial)):
+            if historial[k][u] < INFINITO:
+                primera[u] = k
+                break
+    colores = {}
+    for u in mini:
+        colores[u] = PALETA[primera[u] % len(PALETA)]
+    estilos = {}
+    for u in padre:
+        if padre[u] is not None:
+            estilos[an.clave(u, padre[u])] = (COLOR_OSCURO, 3.2, "-")
+    ej_base("Bellman-Ford desde " + ej_nodo(inicio) + ": ruta minima a cada nodo", colores, estilos,
+            extra={u: ("0 m" if u == inicio else str(round(dist[u])) + " m") for u in mini})
+
+    x0, y0 = 12.2, 5.9
+    eje.text(x0, y0 + 0.95, "Distancia minima desde " + ej_nodo(inicio) + " (m), ronda por ronda", fontsize=9,
+             fontweight="bold", color=COLOR_OSCURO)
+    ej_celda(x0, y0, 1.25, 0.7, "ronda", "#e2e8f0", 8)
+    for c in range(len(nodos)):
+        ej_celda(x0 + 1.25 + 1.1 * c, y0, 1.1, 0.7, ej_nodo(nodos[c]), colores[nodos[c]], 10, True)
+    for k in range(len(historial)):
+        y = y0 - 0.82 * (k + 1)
+        ej_celda(x0, y, 1.25, 0.7, str(k), "#e2e8f0", 9)
+        for c in range(len(nodos)):
+            v = historial[k][nodos[c]]
+            cambio = k > 0 and v < historial[k - 1][nodos[c]]
+            ej_celda(x0 + 1.25 + 1.1 * c, y, 1.1, 0.7, "-" if v == INFINITO else str(round(v)),
+                     "#fde68a" if cambio else "white", 8.5)
+    eje.text(x0, 0.75, "dist_k[v] = min( dist_k-1[v],", fontsize=8, family="monospace", color="#334155")
+    eje.text(x0, 0.2, "                 dist_k-1[u] + peso(u, v) )", fontsize=8, family="monospace", color="#334155")
+    eje.text(x0, -0.5, "amarillo: la distancia mejoro en esa ronda", fontsize=8, color="#475569")
+    ej_cerrar()
+    escribir("EJEMPLO PEQUENO - PASO 7: DP EN GRAFOS (BELLMAN-FORD)\n"
+             "Busca la ruta de menor cable desde la fuente " + ej_nodo(inicio) + " hasta cada subestacion. "
+             "La ronda 0 solo conoce a " + ej_nodo(inicio) + "; en la ronda k cada distancia es la menor que "
+             "se logra usando a lo sumo k aristas, reutilizando lo calculado en la ronda k-1 (programacion dinamica).\n"
+             "Se repite hasta que una ronda ya no mejora nada (" + str(rondas) + " rondas con mejoras). Las lineas "
+             "gruesas son las rutas minimas; los padres guardados permiten reconstruir cada camino.\n"
+             "En el grafo completo (1500 subestaciones) el mismo algoritmo necesita unas 30 rondas.")
+
+
+def ej_mochila():
+    estado["vista"] = ej_mochila
+    if estado["ej_mochila"] is None:
+        candidatos, _ = an.candidatos_refuerzo(red.grafo, estado["fuente"], quitar_aristas=an.diseno_minimo())
+        medios = [c for c in candidatos if 100 <= c["costo"] <= 260 and c["riesgo"] > 1000]
+        elegidos_ej = [0, 1, 3, 15] if len(medios) > 15 else list(range(min(4, len(medios))))
+        estado["ej_mochila"] = [medios[i] for i in elegidos_ej]
+    items = estado["ej_mochila"]
+    unidad, presupuesto = 50, 400
+    costos = [c["costo"] for c in items]
+    valores = [c["riesgo"] for c in items]
+    tabla, pesos = an.mochila_tabla(costos, valores, unidad)
+    elegidos = an.mochila_elegidos(tabla, pesos, presupuesto, unidad)
+    cap = presupuesto // unidad
+
+    # celdas de la tabla por las que pasa la reconstruccion
+    ruta_celdas = set()
+    j = cap
+    for i in range(len(items), 0, -1):
+        if tabla[i][j] != tabla[i - 1][j]:
+            ruta_celdas.add((i, j))
+            j = j - pesos[i - 1]
+
+    # solucion de comparacion: elegir por mayor valor/costo (voraz)
+    orden = sorted(range(len(items)), key=lambda i: -valores[i] / pesos[i])
+    libre, voraz = cap, 0.0
+    for i in orden:
+        if pesos[i] <= libre:
+            libre = libre - pesos[i]
+            voraz = voraz + valores[i]
+
+    eje.clear()
+    eje.text(0.0, 7.0, "4 puentes reales del diseno minimo", fontsize=9, fontweight="bold", color=COLOR_OSCURO)
+    for i in range(len(items)):
+        y = 5.6 - 1.4 * i
+        ej_celda(0.0, y, 0.9, 0.9, "P" + str(i + 1), "#86efac" if i in elegidos else "#e2e8f0", 10, True)
+        eje.text(1.2, y + 0.25, "costo " + str(round(costos[i])) + " m  (" + str(pesos[i]) + " unidades)",
+                 fontsize=8.5, va="center", color=COLOR_OSCURO)
+        eje.text(1.2, y - 0.3, "criticidad " + str(round(valores[i] / 1000, 1)) + " mil kW", fontsize=8.5,
+                 va="center", color="#475569")
+    eje.text(0.0, -0.3, "unidad = " + str(unidad) + " m | presupuesto = " + str(presupuesto) + " m = " + str(cap)
+             + " unidades", fontsize=8.5, color="#475569")
+
+    x0 = 8.0
+    eje.text(x0, 7.0, "tabla[i][j] = criticidad cubierta (miles de kW)", fontsize=9, fontweight="bold",
+             color=COLOR_OSCURO)
+    eje.text(x0 + 1.5, 6.35, "presupuesto j (m)", fontsize=8, color="#475569")
+    ej_celda(x0, 5.75, 1.4, 0.7, "i \\ j", "#e2e8f0", 8)
+    for jj in range(cap + 1):
+        ej_celda(x0 + 1.4 + 1.1 * jj, 5.75, 1.1, 0.7, str(jj * unidad), "#e2e8f0", 8)
+    for i in range(len(items) + 1):
+        y = 4.9 - 0.85 * i
+        ej_celda(x0, y, 1.4, 0.7, "0 puentes" if i == 0 else "hasta P" + str(i), "#e2e8f0", 7.5)
+        for jj in range(cap + 1):
+            v = tabla[i][jj]
+            color = "#86efac" if (i, jj) in ruta_celdas else ("#bbf7d0" if (i == len(items) and jj == cap) else "white")
+            ej_celda(x0 + 1.4 + 1.1 * jj, y, 1.1, 0.7, "0" if v == 0 else str(round(v / 1000, 1)), color, 8)
+    eje.text(x0, 0.4, "tabla[i][j] = max( tabla[i-1][j],  tabla[i-1][j - peso_i] + valor_i )", fontsize=8,
+             family="monospace", color="#334155")
+    eje.text(x0, -0.3, "verde: celdas donde la reconstruccion elige un puente", fontsize=8, color="#475569")
+    eje.set_title("Programacion dinamica: mochila 0/1 con " + str(len(items)) + " puentes", fontsize=11,
+                  fontweight="bold", color=COLOR_OSCURO)
+    eje.set_xlim(-0.5, 20.4)
+    eje.set_ylim(-1.0, 7.6)
+    eje.set_aspect("equal")
+    eje.axis("off")
+    ej_cerrar()
+
+    nombres = ", ".join("P" + str(i + 1) for i in elegidos)
+    escribir("EJEMPLO PEQUENO - PASO 6: PROGRAMACION DINAMICA (MOCHILA 0/1)\n"
+             "Con el diseno minimo cada union entre regiones tiene un solo enlace, que es un puente. Reconstruir un "
+             "enlace cuesta metros de cable y protege los kW que quedarian sin servicio si ese puente fallara.\n"
+             "Con " + str(presupuesto) + " m se eligen " + nombres + " (costo " + str(round(sum(costos[i] for i in elegidos)))
+             + " m) y se cubren " + str(round(tabla[-1][cap])) + " kW. Elegir por mayor valor/costo cubriria solo "
+             + str(round(voraz)) + " kW: la tabla prueba todas las combinaciones sin repetir calculos.\n"
+             "La reconstruccion recorre la tabla de abajo hacia arriba: si tabla[i][j] difiere de tabla[i-1][j], el "
+             "puente i entro en la solucion y se resta su peso a j.")
+
+
 # ACCIONES DE LOS BOTONES
 
 def refrescar():
@@ -969,6 +1413,7 @@ def construir_interfaz():
     global figura, eje, lienzo, caja_texto, lista_enlaces
     global entrada_fuente, entrada_nodo, etiqueta_fallas
     global entrada_ver, etiqueta_nivel, variable_zoom, variable_falla_ej, barra_herramientas
+    global entrada_presupuesto, entrada_destino
 
     raiz = tk.Tk()
     raiz.title("Red electrica de Chimbote - BFS/DFS, orden topologico y SCC")
@@ -988,7 +1433,7 @@ def construir_interfaz():
     # panel izquierdo: pestanas
     izquierda = ttk.Frame(cuerpo, padding=8)
     izquierda.pack(side="left", fill="y")
-    pestanas = ttk.Notebook(izquierda, width=345, height=370)
+    pestanas = ttk.Notebook(izquierda, width=375, height=415)
     pestanas.pack(fill="x")
 
     # --- pestana 1: grafo y divide y venceras ---
@@ -1030,7 +1475,9 @@ def construir_interfaz():
                            ("2. Lista de adyacencia", ej_lista),
                            ("3. BFS / DFS", ej_busqueda),
                            ("4. Orden topologico", ej_topologico),
-                           ("5. SCC (Kosaraju)", ej_scc)]:
+                           ("5. SCC (Kosaraju)", ej_scc),
+                           ("6. DP: mochila (refuerzo)", ej_mochila),
+                           ("7. DP en grafos: Bellman-Ford", ej_bellman)]:
         ttk.Button(marco, text=texto, command=comando).pack(fill="x", pady=1)
     variable_falla_ej = tk.BooleanVar(value=True)
     ttk.Checkbutton(marco, text="Paso 5: fallan 2 de los 3 enlaces", variable=variable_falla_ej,
@@ -1060,6 +1507,40 @@ def construir_interfaz():
     entrada_fuente.insert(0, nombre(estado["fuente"]))
     entrada_fuente.pack(fill="x")
     ttk.Button(marco, text="Cambiar fuente", command=cambiar_fuente).pack(fill="x", pady=(4, 0))
+
+    # --- pestana: optimizar (programacion dinamica y rutas) ---
+    pagina = ttk.Frame(pestanas, padding=8)
+    pestanas.add(pagina, text="Optimizar")
+
+    marco = ttk.LabelFrame(pagina, text="Programacion dinamica: refuerzo", padding=6)
+    marco.pack(fill="x", pady=3)
+    fila = ttk.Frame(marco)
+    fila.pack(fill="x")
+    ttk.Label(fila, text="Presupuesto de cable (m):").pack(side="left")
+    entrada_presupuesto = ttk.Entry(fila, width=8)
+    entrada_presupuesto.insert(0, "1500")
+    entrada_presupuesto.pack(side="left", padx=(6, 0))
+    ttk.Button(marco, text="Calcular refuerzo (mochila 0/1)", command=vista_refuerzo,
+               style="Accent.TButton").pack(fill="x", pady=(4, 1))
+    fila = ttk.Frame(marco)
+    fila.pack(fill="x", pady=1)
+    ttk.Button(fila, text="Curva de presupuesto", command=vista_curva).pack(side="left", fill="x", expand=True)
+    ttk.Button(fila, text="Aplicar refuerzo", command=aplicar_refuerzo).pack(side="left", fill="x", expand=True)
+    ttk.Button(marco, text="Cargar diseno minimo (1 de 3 enlaces)", command=escenario_d,
+               style="Aviso.TButton").pack(fill="x", pady=(4, 0))
+
+    marco = ttk.LabelFrame(pagina, text="DP en grafos: rutas eficientes", padding=6)
+    marco.pack(fill="x", pady=3)
+    fila = ttk.Frame(marco)
+    fila.pack(fill="x")
+    ttk.Label(fila, text="Destino:").pack(side="left")
+    entrada_destino = ttk.Entry(fila, width=10)
+    entrada_destino.pack(side="left", padx=(6, 0))
+    ttk.Label(fila, text="(o clic en el mapa)").pack(side="left", padx=(6, 0))
+    ttk.Button(marco, text="Ruta minima (Bellman-Ford)", command=ir_a_destino_o_defecto,
+               style="Accent.TButton").pack(fill="x", pady=(4, 1))
+    ttk.Button(marco, text="Rutas entre zonas (Floyd-Warshall)", command=vista_zonas,
+               style="Accent.TButton").pack(fill="x", pady=1)
 
     # --- pestana 3: fallas manuales ---
     pagina = ttk.Frame(pestanas, padding=8)

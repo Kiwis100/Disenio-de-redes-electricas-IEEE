@@ -2,12 +2,17 @@
 #   - BFS/DFS: analisis de conectividad
 #   - Ordenamiento topologico: distribucion de energia
 #   - SCC: detectar redundancias
+#   - Programacion dinamica: refuerzo de la red con un presupuesto (mochila 0/1)
+#   - DP en grafos: rutas eficientes (Bellman-Ford y Floyd-Warshall)
 #
 # Usa el grafo que construye red_electrica_chimbote.py (divide y venceras).
+# Todos los algoritmos estan programados a mano (sin networkx).
 #
 # Para simular fallos, todas las funciones reciben:
 #   quitar_nodos:   conjunto de nodos que fallan
 #   quitar_aristas: conjunto de aristas que fallan, guardadas como clave(a, b)
+
+import math
 
 import matplotlib.pyplot as plt
 import red_electrica_chimbote as red
@@ -286,6 +291,325 @@ def redundancia(grafo, quitar_nodos=(), quitar_aristas=()):
     return componentes, numero, puentes
 
 
+# PROGRAMACION DINAMICA: REFUERZO DE LA RED CON PRESUPUESTO
+#
+# Despues de unas fallas, algunos enlaces quedan sin respaldo (puentes, ver SCC).
+# Cada puente tiene una CRITICIDAD: los kW que dejarian de recibir energia si ese enlace fallara.
+# Un puente se refuerza reconstruyendo uno de los enlaces caidos que cruzan el mismo corte, y su
+# costo es la longitud del enlace en metros. Con un presupuesto de cableado limitado hay que elegir
+# que puentes reforzar para cubrir la mayor criticidad: es el problema de la mochila 0/1.
+
+UNIDAD_M = 10    # para la tabla, los costos se redondean hacia arriba a multiplos de 10 m
+
+
+def diseno_minimo():
+    # Diseno de menor costo: de los 3 enlaces que unen cada par de regiones se deja solo el mas
+    # corto. Devuelve los enlaces que se quitan. La red sigue conexa, pero sin respaldo.
+    quitar = set()
+    for k in range(0, len(red.fronteras), red.NUM_ENLACES):
+        grupo = red.fronteras[k:k + red.NUM_ENLACES]
+        grupo = sorted(grupo, key=lambda e: red.grafo[e[0]][e[1]])
+        for a, b in grupo[1:]:
+            quitar.add(clave(a, b))
+    return quitar
+
+
+def demanda_alcanzada(nivel):
+    # suma de la demanda de los nodos que llegaron a ser alcanzados por un BFS
+    total = 0.0
+    for u in nivel:
+        total = total + red.nodos[u]["demanda"]
+    return total
+
+
+def riesgo_de_puente(grafo, fuente, puente, quitar_nodos, quitar_aristas, alcanzada_antes):
+    # kW que dejan de alcanzarse desde la fuente si falla este puente
+    sin_puente = set(quitar_aristas)
+    sin_puente.add(clave(puente[0], puente[1]))
+    nivel, _, _ = bfs(grafo, fuente, quitar_nodos, sin_puente)
+    return alcanzada_antes - demanda_alcanzada(nivel)
+
+
+def candidatos_refuerzo(grafo, fuente, quitar_nodos=(), quitar_aristas=()):
+    # Un candidato por cada puente que se puede reforzar. Devuelve (candidatos, puentes):
+    #   puente:   la arista sin respaldo
+    #   refuerzo: el enlace caido mas corto que cruza el corte de ese puente (el que se reconstruiria)
+    #   costo:    longitud del refuerzo en metros
+    #   riesgo:   criticidad del puente en kW
+    # Para que cada enlace proteja un solo puente (y asi la mochila sea exacta, sin cobrar dos veces
+    # el mismo cable), solo se consideran enlaces caidos que cruzan el corte de UN unico puente.
+    candidatos = []
+    if fuente in quitar_nodos:
+        return candidatos, []
+    _, _, puentes = redundancia(grafo, quitar_nodos, quitar_aristas)
+    nivel0, _, _ = bfs(grafo, fuente, quitar_nodos, quitar_aristas)
+    antes = demanda_alcanzada(nivel0)
+
+    # a cuantos puentes cruza cada enlace caido
+    caidos = []
+    for c, d in quitar_aristas:
+        if c not in quitar_nodos and d not in quitar_nodos:
+            caidos.append((c, d))
+    cruza = {}
+    for e in caidos:
+        cruza[e] = []
+    for k in range(len(puentes)):
+        a, b = puentes[k]
+        sin_puente = set(quitar_aristas)
+        sin_puente.add(clave(a, b))
+        lado, _, _ = bfs(grafo, a, quitar_nodos, sin_puente)      # nodos del lado de "a"
+        for c, d in caidos:
+            if (c in lado) != (d in lado):                         # el enlace cruza el corte
+                cruza[(c, d)].append(k)
+
+    for k in range(len(puentes)):
+        mejor = None
+        for e in caidos:
+            if cruza[e] == [k]:
+                if mejor is None or grafo[e[0]][e[1]] < grafo[mejor[0]][mejor[1]]:
+                    mejor = e
+        if mejor is None:
+            continue
+        candidatos.append({"puente": puentes[k], "refuerzo": mejor, "costo": grafo[mejor[0]][mejor[1]],
+                           "riesgo": riesgo_de_puente(grafo, fuente, puentes[k], quitar_nodos,
+                                                      quitar_aristas, antes)})
+    return candidatos, puentes
+
+
+def mochila_tabla(costos, valores, unidad=UNIDAD_M):
+    # Mochila 0/1 con programacion dinamica.
+    #   tabla[i][j] = mayor criticidad que se cubre usando solo los primeros i candidatos
+    #                 con un presupuesto de j unidades de cable
+    #   tabla[i][j] = max( tabla[i-1][j],  tabla[i-1][j - peso_i] + valor_i )
+    # La tabla se arma hasta el costo total de todos los candidatos, asi sirve para cualquier presupuesto.
+    pesos = []
+    for c in costos:
+        pesos.append(int(math.ceil(c / unidad)))
+    capacidad = sum(pesos)
+    tabla = [[0.0] * (capacidad + 1)]
+    for i in range(1, len(costos) + 1):
+        fila = tabla[i - 1][:]
+        peso = pesos[i - 1]
+        valor = valores[i - 1]
+        for j in range(peso, capacidad + 1):
+            con_este = tabla[i - 1][j - peso] + valor
+            if con_este > fila[j]:
+                fila[j] = con_este
+        tabla.append(fila)
+    return tabla, pesos
+
+
+def mochila_elegidos(tabla, pesos, presupuesto, unidad=UNIDAD_M):
+    # Recorre la tabla de atras hacia adelante para saber que candidatos se eligieron
+    j = min(int(presupuesto // unidad), len(tabla[0]) - 1)
+    elegidos = []
+    for i in range(len(pesos), 0, -1):
+        if tabla[i][j] != tabla[i - 1][j]:        # el candidato i hizo subir el valor: se eligio
+            elegidos.append(i - 1)
+            j = j - pesos[i - 1]
+    elegidos.reverse()
+    return elegidos
+
+
+def mochila_fuerza_bruta(costos, valores, presupuesto, unidad=UNIDAD_M):
+    # Solo para comprobar el resultado: prueba los 2^n subconjuntos (sirve con n pequeno)
+    n = len(costos)
+    pesos = []
+    for c in costos:
+        pesos.append(int(math.ceil(c / unidad)))
+    cap = int(presupuesto // unidad)
+    mejor = 0.0
+    for mascara in range(1 << n):
+        peso = 0
+        valor = 0.0
+        for i in range(n):
+            if mascara & (1 << i):
+                peso = peso + pesos[i]
+                valor = valor + valores[i]
+        if peso <= cap and valor > mejor:
+            mejor = valor
+    return mejor
+
+
+def refuerzo_dp(grafo, fuente, presupuesto, quitar_nodos=(), quitar_aristas=()):
+    candidatos, puentes = candidatos_refuerzo(grafo, fuente, quitar_nodos, quitar_aristas)
+    costos = [c["costo"] for c in candidatos]
+    valores = [c["riesgo"] for c in candidatos]
+    tabla, pesos = mochila_tabla(costos, valores)
+    elegidos = mochila_elegidos(tabla, pesos, presupuesto)
+
+    # verificacion: se reconstruyen de verdad los enlaces elegidos y se vuelve a buscar puentes
+    nuevos = set(quitar_aristas)
+    for i in elegidos:
+        nuevos.discard(clave(candidatos[i]["refuerzo"][0], candidatos[i]["refuerzo"][1]))
+    _, _, puentes_despues = redundancia(grafo, quitar_nodos, nuevos)
+
+    return {"candidatos": candidatos, "puentes": puentes, "tabla": tabla, "pesos": pesos,
+            "elegidos": elegidos, "enlaces": [candidatos[i]["refuerzo"] for i in elegidos],
+            "costo": sum(costos[i] for i in elegidos), "protegido": sum(valores[i] for i in elegidos),
+            "riesgo_total": sum(valores), "puentes_despues": len(puentes_despues)}
+
+
+# DP EN GRAFOS: RUTAS EFICIENTES
+
+def bellman_ford(grafo, fuente, quitar_nodos=(), quitar_aristas=(), historial=None):
+    # Menor distancia (en metros de cable) desde la fuente hasta cada subestacion.
+    # Programacion dinamica: dist_k[v] = menor distancia usando a lo sumo k aristas
+    #   dist_k[v] = min( dist_{k-1}[v],  dist_{k-1}[u] + peso(u, v) )   para cada arista (u, v)
+    # Se repite hasta que una ronda ya no mejora nada. Devuelve (dist, padre, rondas).
+    # Si se pasa una lista en "historial", se guarda la distancia de cada nodo despues de cada ronda.
+    infinito = float("inf")
+    dist = {}
+    padre = {}
+    for u in grafo:
+        if u not in quitar_nodos:
+            dist[u] = infinito
+            padre[u] = None
+    dist[fuente] = 0.0
+    arcos = []
+    for a in dist:
+        for b in vecinos(grafo, a, quitar_nodos, quitar_aristas):
+            arcos.append((a, b, grafo[a][b]))
+    if historial is not None:
+        historial.append(dict(dist))
+    rondas = 0
+    for _ in range(len(dist) - 1):
+        nuevo = dict(dist)                 # la ronda k usa solo lo calculado en la ronda k-1
+        hubo_cambio = False
+        for u, v, w in arcos:
+            if dist[u] + w < nuevo[v]:
+                nuevo[v] = dist[u] + w
+                padre[v] = u
+                hubo_cambio = True
+        dist = nuevo
+        if historial is not None:
+            historial.append(dict(dist))
+        if not hubo_cambio:
+            break
+        rondas = rondas + 1
+    return dist, padre, rondas
+
+
+def camino_minimo(padre, dist, destino):
+    # reconstruye la ruta fuente -> destino siguiendo los padres (vacia si no hay ruta)
+    if dist[destino] == float("inf"):
+        return []
+    ruta = []
+    u = destino
+    while u is not None:
+        ruta.append(u)
+        u = padre[u]
+    ruta.reverse()
+    return ruta
+
+
+def largo_camino(grafo, ruta):
+    total = 0.0
+    for k in range(len(ruta) - 1):
+        total = total + grafo[ruta[k]][ruta[k + 1]]
+    return total
+
+
+def grafo_de_zonas(quitar_aristas=()):
+    # Grafo reducido: cada zona es un nodo y dos zonas se unen si tienen un enlace de frontera activo.
+    # El peso es la distancia entre los centros de las dos zonas (aproximacion de cuanto cable hay
+    # que recorrer para pasar de una a otra). Devuelve (matriz de distancias, centros, zona de cada nodo).
+    zona_de = {}
+    centros = []
+    for k in range(len(red.zonas)):
+        sx = 0.0
+        sy = 0.0
+        for u in red.zonas[k]:
+            zona_de[u] = k
+            sx = sx + red.nodos[u]["x"]
+            sy = sy + red.nodos[u]["y"]
+        centros.append((sx / len(red.zonas[k]), sy / len(red.zonas[k])))
+    n = len(red.zonas)
+    d = []
+    for i in range(n):
+        d.append([float("inf")] * n)
+        d[i][i] = 0.0
+    for a, b in red.fronteras:
+        if clave(a, b) in quitar_aristas:
+            continue
+        i = zona_de[a]
+        j = zona_de[b]
+        if i != j:
+            dx = centros[i][0] - centros[j][0]
+            dy = centros[i][1] - centros[j][1]
+            w = math.sqrt(dx * dx + dy * dy)
+            if w < d[i][j]:
+                d[i][j] = w
+                d[j][i] = w
+    return d, centros, zona_de
+
+
+def floyd_warshall(d):
+    # Distancias entre todos los pares de zonas. Programacion dinamica:
+    #   dist_k[i][j] = menor distancia de i a j pasando solo por las zonas 0..k como intermedias
+    #   dist_k[i][j] = min( dist_{k-1}[i][j],  dist_{k-1}[i][k] + dist_{k-1}[k][j] )
+    # "siguiente[i][j]" guarda la primera zona de la ruta de i a j, para poder reconstruirla.
+    n = len(d)
+    infinito = float("inf")
+    dist = []
+    for fila in d:
+        dist.append(fila[:])
+    siguiente = []
+    for i in range(n):
+        siguiente.append([None] * n)
+        for j in range(n):
+            if i != j and dist[i][j] < infinito:
+                siguiente[i][j] = j
+    for k in range(n):
+        for i in range(n):
+            dik = dist[i][k]
+            if dik == infinito:
+                continue
+            for j in range(n):
+                nuevo = dik + dist[k][j]
+                if nuevo < dist[i][j]:
+                    dist[i][j] = nuevo
+                    siguiente[i][j] = siguiente[i][k]
+    return dist, siguiente
+
+
+def ruta_entre_zonas(siguiente, i, j):
+    if i == j:
+        return [i]
+    if siguiente[i][j] is None:
+        return []
+    ruta = [i]
+    while i != j:
+        i = siguiente[i][j]
+        ruta.append(i)
+    return ruta
+
+
+def resumen_zonas(dist):
+    # Excentricidad de una zona = su ruta mas larga hacia cualquier otra zona alcanzable.
+    # La zona central es la de menor excentricidad. El diametro es la mayor distancia entre dos zonas.
+    n = len(dist)
+    excentricidad = []
+    diametro = (0, 0, 0.0)
+    inalcanzables = 0
+    for i in range(n):
+        mayor = 0.0
+        for j in range(n):
+            if dist[i][j] == float("inf"):
+                inalcanzables = inalcanzables + 1
+                continue
+            if dist[i][j] > mayor:
+                mayor = dist[i][j]
+            if dist[i][j] > diametro[2]:
+                diametro = (i, j, dist[i][j])
+        excentricidad.append(mayor)
+    central = 0
+    for i in range(n):
+        if excentricidad[i] < excentricidad[central]:
+            central = i
+    return central, excentricidad, diametro, inalcanzables
+
+
 # FIGURAS
 
 def figura(archivo, titulo, valores, cmap, resaltadas=(), quitar_nodos=(), quitar_aristas=()):
@@ -404,6 +728,47 @@ def main():
     scc_c, _, puentes_c = redundancia(grafo, quitar_nodos=quitar_c)
     print("Falla:", nombre(mayor), "| demanda:", red.nodos[mayor]["demanda"])
     print("Componentes conexas:", len(comps_c), "| puentes:", len(puentes_c))
+
+    print()
+    print("=== 4. PROGRAMACION DINAMICA: REFUERZO CON PRESUPUESTO ===")
+    quitar_d = diseno_minimo()
+    print("Diseno minimo: se quitan", len(quitar_d), "enlaces (queda el mas corto de cada union)")
+    presupuesto = 1500
+    res = refuerzo_dp(grafo, fuente, presupuesto, quitar_aristas=quitar_d)
+    print("Puentes sin respaldo:", len(res["puentes"]), "| con refuerzo posible:", len(res["candidatos"]))
+    print("Presupuesto:", presupuesto, "m | enlaces a reconstruir:", len(res["elegidos"]),
+          "| costo:", round(res["costo"]), "m")
+    print("Criticidad cubierta:", round(res["protegido"]), "de", round(res["riesgo_total"]), "kW (" +
+          str(round(100 * res["protegido"] / res["riesgo_total"], 1)) + "%)")
+    print("Puentes que quedan al reconstruirlos:", res["puentes_despues"], "de", len(res["puentes"]))
+    # comprobacion con fuerza bruta sobre los 12 candidatos de mayor criticidad
+    mejores = sorted(res["candidatos"], key=lambda c: c["riesgo"], reverse=True)[:12]
+    cs = [c["costo"] for c in mejores]
+    vs = [c["riesgo"] for c in mejores]
+    tabla12, pesos12 = mochila_tabla(cs, vs)
+    dp12 = tabla12[-1][min(presupuesto // UNIDAD_M, len(tabla12[0]) - 1)]
+    fb12 = mochila_fuerza_bruta(cs, vs, presupuesto)
+    print("Comprobacion con fuerza bruta (12 candidatos, 2^12 subconjuntos): DP =", round(dp12, 1),
+          "| fuerza bruta =", round(fb12, 1), "| coinciden:", abs(dp12 - fb12) < 1e-6)
+
+    print()
+    print("=== 5. DP EN GRAFOS: RUTAS EFICIENTES ===")
+    dist_bf, padre_bf, rondas = bellman_ford(grafo, fuente)
+    lejano = max(dist_bf, key=lambda u: dist_bf[u])
+    ruta = camino_minimo(padre_bf, dist_bf, lejano)
+    print("Bellman-Ford desde", nombre(fuente), ":", rondas, "rondas")
+    print("Subestacion mas lejana:", nombre(lejano), "| ruta minima:", round(dist_bf[lejano]), "m en",
+          len(ruta) - 1, "saltos")
+    nivel_bfs, padre_bfs, _ = bfs(grafo, fuente)
+    ruta_bfs = camino_minimo(padre_bfs, {u: 0 for u in padre_bfs}, lejano)
+    print("Ruta con menos saltos (BFS):", len(ruta_bfs) - 1, "saltos,", round(largo_camino(grafo, ruta_bfs)),
+          "m de cable")
+    d_zonas, centros, zona_de = grafo_de_zonas()
+    dist_z, sig_z = floyd_warshall(d_zonas)
+    central, excentricidad, diametro, inalc = resumen_zonas(dist_z)
+    print("Floyd-Warshall entre", len(d_zonas), "zonas | zona central:", central + 1, "(ruta mas larga:",
+          round(excentricidad[central]), "m) | diametro:", round(diametro[2]), "m entre las zonas",
+          diametro[0] + 1, "y", diametro[1] + 1)
 
     print()
     print("=== FIGURAS ===")

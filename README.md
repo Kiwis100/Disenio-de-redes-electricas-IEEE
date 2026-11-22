@@ -16,7 +16,8 @@ Proyecto de Complejidad Algorítmica. Modela las subestaciones de distribución 
 | SCC (Kosaraju) | `analisis_red.py` | Detecta conexiones sin respaldo (redundancia) |
 | Fuerza bruta  | `FuerzaBruta_DataSet.py` y `FuerzaBrutaGrafo_DataSet.py` | Configuraciones validas posibles (Busqueda exhaustiva) |
 | Backtracking | `BACKTRACKING_DataSet.py` | (Configuraciones posibles con poda (Restricciones)|
-
+|Programación dinámica (mochila 0/1) | `analisis_red.py` | Elige qué enlaces reforzar con un presupuesto de cable para cubrir la mayor criticidad |
+| DP en grafos (Bellman-Ford y Floyd-Warshall) | `analisis_red.py` | Rutas de menor cable desde la fuente y distancias entre zonas |
 
 ## Archivos
 - `Pythons/red_electrica_chimbote.py`: lee el CSV y construye el grafo.
